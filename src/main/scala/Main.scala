@@ -3,21 +3,44 @@ import java.io.File
 import com.github.tototoshi.csv.*
 import org.maraist.latex.{LaTeXdoc, Sampler}
 
-val src = "/home/jm/DFL/SD63/CaucusConvention/borda-decoder/test.csv"
-val candidateCount = 8
+val src = "/home/jm/DFL/SD63/CaucusConvention/borda-decoder/raw-results.csv"
+val candidateCount = 16
 
 @main def mainResponseProcessor: Unit = {
-  println()
+  println(s"Reading results from file $src")
   val reader = CSVReader.open(new File(src))
   val responses = getResponses(reader)
+  reader.close
+  printVCresults(responses)
   val bordaCounts = getBordaCounts(responses)
-  fullEcho(responses, bordaCounts)
-
-  println()
+  // fullEcho(responses, bordaCounts)
+  writeCSV(responses, bordaCounts)
 }
 
-def getResponses(reader: CSVReader): Seq[Response] =
-  reader.all().tail.map(Response(_))
+def getResponses(reader: CSVReader): Seq[Response] = {
+  val rawResps = reader.all().tail.map(Response(_))
+
+  println(s"\nFound ${rawResps.length} ballot(s)")
+  for (resp <- rawResps) do {
+    val count = rawResps.filter(_.email == resp.email).length
+    println(s"From ${resp.email} ($count with this address) at ${resp.date}")
+  }
+
+  println(s"\nRemoving any replaced ballots")
+  val isLastWithEmail = (resp: Response) => {
+    val thisEmail = resp.email
+    val ifThisEmail = (x: Response) => x.email == thisEmail
+    val lastIdx = rawResps.lastIndexWhere(ifThisEmail)
+    resp == rawResps(lastIdx)
+  }
+  val resps = rawResps.filter(isLastWithEmail)
+  for (resp <- resps) do {
+    val count = resps.filter(_.email == resp.email).length
+    println(s"From ${resp.email} ($count with this address) at ${resp.date}")
+  }
+
+  resps
+}
 
 def fullEcho(resps: Seq[Response], counts: Map[Candidate, Int]): Unit = {
   for (resp <- resps) do {
@@ -28,14 +51,78 @@ def fullEcho(resps: Seq[Response], counts: Map[Candidate, Int]): Unit = {
   }
 }
 
+def printVCresults(resps: Seq[Response]): Unit = {
+  val selected: Set[String] = {
+    val buf = Set.newBuilder[String]
+    for (resp <- resps) do {
+      buf += resp.viceChairVote
+    }
+    buf.result
+  }
+
+  println("\nVice-Chair results: ")
+  for (vc <- selected) do {
+    val count = resps.filter(_.viceChairVote == vc).length
+    println(s"  $count - $vc")
+  }
+}
+
+def writeCSV(resps: Seq[Response], counts: Map[Candidate, Int]): Unit = {
+  val writer = CSVWriter.open("tally.csv")
+  println("\nCreating file tally.csv for delegate rankings")
+
+  // The line with responder emails
+  val respEmailLine = List.newBuilder[String]
+  respEmailLine += ""
+  for (resp <- resps)
+    do if !nonrankerEmails.contains(resp.email) then
+      respEmailLine += resp.email
+  writer.writeRow(respEmailLine.result)
+
+  // Now for each candidate, the rank from each responder for that
+  // candidate
+  for (cand <- Candidate.all) do {
+    val candRankLine = List.newBuilder[String]
+    candRankLine += cand.name
+    for (resp <- resps) do if !nonrankerEmails.contains(resp.email) then {
+      resp.forCandidate.get(cand) match {
+        case Some(rank) => candRankLine += rank.toString()
+        case None => candRankLine += ""
+      }
+    }
+    writer.writeRow(candRankLine.result)
+  }
+
+  // Blank line
+  writer.writeRow(List())
+
+  for (cand <- Candidate.sorted(counts)) do {
+    writer.writeRow(List(cand.name, counts(cand)))
+  }
+  writer.close
+  println(" - Written")
+  println()
+}
+
+val nonrankerEmails = Seq(
+  "jettieann@gmail.com",
+  "mlickne1@yahoo.com"
+)
+
 def getBordaCounts(resps: Seq[Response]): Map[Candidate, Int] = {
   val buf = new HashMap[Candidate, Int]
-  for (resp <- resps; i <- 1 to candidateCount) do {
-    resp.ranks(i).map((who) => {
-      val prev = buf.getOrElse(who, 0)
-      val rank = prev + candidateCount + 1 - i
-      buf(who) = rank
-    })
+  for (resp <- resps) do {
+    // println(s"\"${resp.email}\"")
+    if !nonrankerEmails.contains(resp.email) then {
+      // println("  Y")
+      for (i <- 1 to candidateCount) do {
+        resp.ranks(i).map((who) => {
+          val prev = buf.getOrElse(who, 0)
+          val rank = prev + candidateCount + 1 - i
+          buf(who) = rank
+        })
+      }
+    }
   }
   Map.from(buf)
 }
@@ -43,9 +130,11 @@ def getBordaCounts(resps: Seq[Response]): Map[Candidate, Int] = {
 // =============== Response wrapper
 
 case class Response(
+  date: String,
   email: String,
   viceChairVote: String,
-  ranks: Array[Option[Candidate]]
+  ranks: Array[Option[Candidate]],
+  forCandidate: Map[Candidate, Int]
 ) {
 
   override def toString(): String = {
@@ -67,32 +156,65 @@ case class Response(
 object Response {
   def apply(tuple: List[String]): Response = tuple match {
     case timestamp :: email :: viceChairVote
-        :: aRank :: bRank :: cRank :: dRank :: eRank :: fRank :: gRank :: hRank
+        /* :: aRank :: bRank :: cRank :: dRank :: eRank :: fRank :: gRank :: hRank */
+           :: hogan :: riordan :: doherty :: howard :: hill :: jones :: keller
+           :: valen :: whiting :: lifson :: bush :: bonham :: vandervegte
+           :: abramson :: hinds :: ferguson
         :: _ => {
           val ranks: Array[Option[Candidate]] =
             Array.fill(candidateCount+1)(None)
-          addRanking(ranks, Candidate.AA, aRank)
-          addRanking(ranks, Candidate.BB, bRank)
-          addRanking(ranks, Candidate.CC, cRank)
-          addRanking(ranks, Candidate.DD, dRank)
-          addRanking(ranks, Candidate.EE, eRank)
-          addRanking(ranks, Candidate.FF, fRank)
-          addRanking(ranks, Candidate.GG, gRank)
-          addRanking(ranks, Candidate.HH, hRank)
-          Response(email, viceChairVote, ranks)
+          val forCandidate = Map.newBuilder[Candidate, Int]
+
+          /*
+          addRanking(ranks, forCandidate, Candidate.AA, aRank)
+          addRanking(ranks, forCandidate, Candidate.BB, bRank)
+          addRanking(ranks, forCandidate, Candidate.CC, cRank)
+          addRanking(ranks, forCandidate, Candidate.DD, dRank)
+          addRanking(ranks, forCandidate, Candidate.EE, eRank)
+          addRanking(ranks, forCandidate, Candidate.FF, fRank)
+          addRanking(ranks, forCandidate, Candidate.GG, gRank)
+          addRanking(ranks, forCandidate, Candidate.HH, hRank)
+          */
+
+          addRanking(ranks, forCandidate, Candidate.JulieDoherty, doherty)
+          addRanking(ranks, forCandidate, Candidate.MichaelAbramson, abramson)
+          addRanking(ranks, forCandidate, Candidate.TimBonham, bonham)
+          addRanking(ranks, forCandidate, Candidate.JimBush, bush)
+          addRanking(ranks, forCandidate, Candidate.EricFerguson, ferguson)
+          addRanking(ranks, forCandidate, Candidate.BurkeHinds, hinds)
+          addRanking(ranks, forCandidate, Candidate.TommyKeller, keller)
+          addRanking(ranks, forCandidate, Candidate.AlanLifson, lifson)
+          addRanking(ranks, forCandidate, Candidate.AlexValen, valen)
+          addRanking(
+            ranks, forCandidate, Candidate.NickVanderVegte, vandervegte)
+          addRanking(ranks, forCandidate, Candidate.JamisonWhiting, whiting)
+          addRanking(ranks, forCandidate, Candidate.JettieAnnHill, hill)
+          addRanking(ranks, forCandidate, Candidate.DevinHogan, hogan)
+          addRanking(ranks, forCandidate, Candidate.MollyHoward, howard)
+          addRanking(ranks, forCandidate, Candidate.AnneJones, jones)
+          addRanking(ranks, forCandidate, Candidate.AprilRiordan, riordan)
+
+          Response(timestamp, email, viceChairVote, ranks, forCandidate.result)
         }
     case _ => throw new IllegalArgumentException(tuple.toString)
   }
-}
 
-def addRanking(
-  ranks: Array[Option[Candidate]], who: Candidate, rank: String
-) = {
-  decodeRank(rank).map((i) => { ranks(i) = Some(who) })
+
+  def addRanking(
+    ranks: Array[Option[Candidate]],
+    forCand: Builder[(Candidate, Int), Map[Candidate, Int]],
+    who: Candidate, rank: String
+  ) = {
+    decodeRank(rank).map((i) => {
+      ranks(i) = Some(who)
+      forCand += ((who, i))
+    })
+  }
 }
 // =============== The candidates
 
 enum Candidate(val name: String) {
+  /*
   case AA extends Candidate("AA")
   case BB extends Candidate("BB")
   case CC extends Candidate("CC")
@@ -101,7 +223,7 @@ enum Candidate(val name: String) {
   case FF extends Candidate("FF")
   case GG extends Candidate("GG")
   case HH extends Candidate("HH")
-  /*
+   */
   case JulieDoherty extends Candidate("Julie Doherty")
   case MichaelAbramson extends Candidate("Michael Abramson")
   case TimBonham extends Candidate("Tim Bonham")
@@ -118,25 +240,24 @@ enum Candidate(val name: String) {
   case MollyHoward extends Candidate("Molly Howard")
   case AnneJones extends Candidate("Anne Jones")
   case AprilRiordan extends Candidate("April Riordan")
-   */
 }
 
 object Candidate {
+  /*
   def all = List(AA,BB,CC,DD,EE,FF,GG,HH)
+   */
+  def all = List(
+    DevinHogan,
+    AprilRiordan, JulieDoherty, MollyHoward, JettieAnnHill, AnneJones,
+    TommyKeller, AlexValen, JamisonWhiting,
+    AlanLifson, JimBush, TimBonham, NickVanderVegte,
+    MichaelAbramson, BurkeHinds, EricFerguson)
   def sorted(scores: Map[Candidate,Int]): List[Candidate] = {
     given Ordering[Candidate] = new Ordering[Candidate] {
       def compare(a: Candidate, b: Candidate) = scores(b).compare(scores(a))
     }
     all.sorted
   }
-  /*
-  def all = Set(
-    DevinHogan,
-    AprilRiordan, JulieDoherty, MollyHoward, JettieAnnHill, AnneJones,
-    TommyKeller, AlexValen, JamisonWhiting,
-    AlanLifson, JimBush, TimBonham, NickVanderVegte,
-    MichaelAbramson, BurkeHinds, EricFerguson)
-   */
 }
 
 // =============== Rank
